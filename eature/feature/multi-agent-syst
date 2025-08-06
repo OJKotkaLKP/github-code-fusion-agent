@@ -1,0 +1,465 @@
+# Moniagenttijärjestelmän Toteutus GitHub Code Fusion Agentille
+
+Tässä on täydellinen toteutussuunnitelma moniagenttijärjestelmälle GitHub Code Fusion Agent -projektiin:
+
+## Moniagenttiarkkitehtuuri
+
+```mermaid
+graph TD
+    U[Käyttäjä] -->|Pyyntö| MA(Pääagentti)
+    MA --> SA[Hakuagentti]
+    MA --> AA[Analyysiagentti]
+    MA --> IA[Integraatioagentti]
+    MA --> TA[Testausagentti]
+    MA --> OA[Optimointiagentti]
+    MA --> DA[Dokumentaatioagentti]
+    
+    SA -->|Löydetyt repositoriot| AA
+    AA -->|Analysoidut koodit| IA
+    IA -->|Yhdistetty koodi| TA
+    TA -->|Testitulokset| OA
+    OA -->|Optimoidut koodit| DA
+    DA -->|Dokumentoitu koodi| MA
+    MA -->|Lopputulos| U
+    
+    IA -->|Kyselyt| MA
+    TA -->|Ongelmaraportit| OA
+    OA -->|Korjausehdotukset| IA
+```
+
+## Toteutustiedostot
+
+### 1. Agenttien perusluokka (`src/agents/base_agent.py`)
+```python
+import abc
+from src.utils.message_bus import MessageBus
+
+class BaseAgent(abc.ABC):
+    def __init__(self, agent_id, message_bus):
+        self.agent_id = agent_id
+        self.message_bus = message_bus
+        self._register_callbacks()
+    
+    def _register_callbacks(self):
+        """Rekisteröi agentin viestinkäsittelijät"""
+        self.message_bus.subscribe(f"agent.{self.agent_id}", self.handle_message)
+    
+    @abc.abstractmethod
+    def handle_message(self, message):
+        """Käsittelee saapuvat viestit"""
+        pass
+    
+    def send_message(self, recipient, message_type, content):
+        """Lähettää viestin toiselle agentille"""
+        self.message_bus.publish(f"agent.{recipient}", {
+            "sender": self.agent_id,
+            "type": message_type,
+            "content": content
+        })
+    
+    def broadcast(self, message_type, content):
+        """Lähettää viestin kaikille agenteille"""
+        self.message_bus.publish("agent.broadcast", {
+            "sender": self.agent_id,
+            "type": message_type,
+            "content": content
+        })
+```
+
+### 2. Viestinvälitysjärjestelmä (`src/utils/message_bus.py`)
+```python
+import threading
+from collections import defaultdict
+
+class MessageBus:
+    def __init__(self):
+        self.subscribers = defaultdict(list)
+        self.lock = threading.Lock()
+    
+    def publish(self, topic, message):
+        """Lähettää viestin tiettyyn aihealueeseen"""
+        with self.lock:
+            if topic in self.subscribers:
+                for callback in self.subscribers[topic]:
+                    callback(message)
+    
+    def subscribe(self, topic, callback):
+        """Rekisteröi kutsufunktion aihealueelle"""
+        with self.lock:
+            self.subscribers[topic].append(callback)
+    
+    def unsubscribe(self, topic, callback):
+        """Poistaa rekisteröidyn kutsufunktion"""
+        with self.lock:
+            if topic in self.subscribers:
+                self.subscribers[topic] = [cb for cb in self.subscribers[topic] if cb != callback]
+```
+
+### 3. Pääagentti (`src/agents/master_agent.py`)
+```python
+from .base_agent import BaseAgent
+import json
+
+class MasterAgent(BaseAgent):
+    def __init__(self, message_bus):
+        super().__init__("master", message_bus)
+        self.current_task = None
+        self.agents = {
+            "search": None,
+            "analysis": None,
+            "integration": None,
+            "testing": None,
+            "optimization": None,
+            "documentation": None
+        }
+    
+    def handle_message(self, message):
+        msg_type = message["type"]
+        
+        if msg_type == "task_request":
+            self.handle_task_request(message["content"])
+        elif msg_type == "status_update":
+            self.handle_status_update(message["content"])
+        elif msg_type == "result":
+            self.handle_result(message["sender"], message["content"])
+        elif msg_type == "error":
+            self.handle_error(message["sender"], message["content"])
+    
+    def handle_task_request(self, task_description):
+        print(f"✅ Uusi tehtävä vastaanotettu: {task_description}")
+        self.current_task = task_description
+        
+        # Aloita prosessi
+        self.send_message("search", "search_request", {
+            "query": task_description,
+            "languages": ["python"]
+        })
+    
+    def handle_status_update(self, status):
+        print(f"🔄 {status['agent']}: {status['message']}")
+    
+    def handle_result(self, sender, result):
+        print(f"🎯 {sender} palautti tuloksen")
+        
+        # Reititä tulokset eteenpäin
+        if sender == "search":
+            self.send_message("analysis", "analyze_repos", result)
+        elif sender == "analysis":
+            self.send_message("integration", "integrate_code", result)
+        elif sender == "integration":
+            self.send_message("testing", "test_code", result)
+        elif sender == "testing":
+            self.send_message("optimization", "optimize_code", result)
+        elif sender == "optimization":
+            self.send_message("documentation", "document_code", result)
+        elif sender == "documentation":
+            print("✨ Tehtävä valmis!")
+            self.save_final_result(result)
+    
+    def handle_error(self, sender, error):
+        print(f"⛔ Virhe agentissa {sender}: {error['message']}")
+        # Virheenkäsittelylogiikka tähän
+    
+    def save_final_result(self, result):
+        filename = f"result_{self.current_task[:20]}.json"
+        with open(filename, "w") as f:
+            json.dump(result, f, indent=2)
+        print(f"💾 Tulos tallennettu tiedostoon {filename}")
+    
+    def register_agent(self, agent_type, agent):
+        self.agents[agent_type] = agent
+```
+
+### 4. Hakuagentti (`src/agents/search_agent.py`)
+```python
+from .base_agent import BaseAgent
+from src.utils.github_client import GitHubClient
+
+class SearchAgent(BaseAgent):
+    def __init__(self, message_bus):
+        super().__init__("search", message_bus)
+        self.github = GitHubClient()
+    
+    def handle_message(self, message):
+        if message["type"] == "search_request":
+            self.search_github(message["content"])
+    
+    def search_github(self, request):
+        self.broadcast("status_update", {
+            "agent": "search",
+            "message": f"Etsitään repositorioita: {request['query']}"
+        })
+        
+        try:
+            repos = self.github.search_repositories(
+                query=request["query"],
+                languages=request["languages"],
+                max_repos=5
+            )
+            
+            self.send_message("master", "result", repos)
+        except Exception as e:
+            self.send_message("master", "error", {
+                "message": f"Hakuvirhe: {str(e)}",
+                "details": str(e)
+            })
+```
+
+### 5. Integraatioagentti (`src/agents/integration_agent.py`)
+```python
+from .base_agent import BaseAgent
+from src.utils.openai_helper import OpenAIIntegration
+
+class IntegrationAgent(BaseAgent):
+    def __init__(self, message_bus):
+        super().__init__("integration", message_bus)
+        self.ai_integration = OpenAIIntegration()
+    
+    def handle_message(self, message):
+        if message["type"] == "integrate_code":
+            self.integrate_code(message["content"])
+    
+    def integrate_code(self, code_blocks):
+        self.broadcast("status_update", {
+            "agent": "integration",
+            "message": "Yhdistetään koodilohkoja..."
+        })
+        
+        try:
+            # Valitse tärkeimmät koodilohkot
+            selected_blocks = self.select_relevant_blocks(code_blocks)
+            
+            # Yhdistä koodi tekoälyn avulla
+            combined_code = self.ai_integration.combine_code(
+                blocks=selected_blocks,
+                task_description=code_blocks["task"]
+            )
+            
+            self.send_message("master", "result", {
+                "combined_code": combined_code,
+                "original_blocks": selected_blocks
+            })
+        except Exception as e:
+            self.send_message("master", "error", {
+                "message": f"Integraatiovirhe: {str(e)}",
+                "details": str(e)
+            })
+    
+    def select_relevant_blocks(self, code_blocks, max_blocks=3):
+        # Priorisoi koodilohkot laadun perusteella
+        sorted_blocks = sorted(
+            code_blocks["code_blocks"],
+            key=lambda x: x["quality_score"],
+            reverse=True
+        )
+        return sorted_blocks[:max_blocks]
+```
+
+### 6. Testausagentti (`src/agents/testing_agent.py`)
+```python
+from .base_agent import BaseAgent
+from src.execution.docker_manager import DockerExecutionManager
+
+class TestingAgent(BaseAgent):
+    def __init__(self, message_bus):
+        super().__init__("testing", message_bus)
+        self.docker = DockerExecutionManager()
+    
+    def handle_message(self, message):
+        if message["type"] == "test_code":
+            self.test_code(message["content"])
+    
+    def test_code(self, code_data):
+        self.broadcast("status_update", {
+            "agent": "testing",
+            "message": "Suoritetaan testejä Docker-säiliössä..."
+        })
+        
+        try:
+            # Suorita koodi Dockerissa
+            result = self.docker.execute_code(
+                code=code_data["combined_code"],
+                dependencies=code_data["dependencies"]
+            )
+            
+            # Analysoi tulokset
+            test_report = self.analyze_results(result)
+            
+            self.send_message("master", "result", {
+                "test_report": test_report,
+                "original_code": code_data["combined_code"]
+            })
+        except Exception as e:
+            self.send_message("master", "error", {
+                "message": f"Testausvirhe: {str(e)}",
+                "details": str(e)
+            })
+    
+    def analyze_results(self, execution_result):
+        # Analysoi suorituksen tulokset
+        return {
+            "status": execution_result["status"],
+            "pass_rate": self.calculate_pass_rate(execution_result),
+            "performance": self.measure_performance(execution_result),
+            "issues": self.detect_issues(execution_result)
+        }
+```
+
+### 7. Päivitetty pääsovellus (`main.py`)
+```python
+from src.utils.message_bus import MessageBus
+from src.agents.master_agent import MasterAgent
+from src.agents.search_agent import SearchAgent
+from src.agents.analysis_agent import AnalysisAgent
+from src.agents.integration_agent import IntegrationAgent
+from src.agents.testing_agent import TestingAgent
+from src.agents.optimization_agent import OptimizationAgent
+from src.agents.documentation_agent import DocumentationAgent
+
+def main():
+    # Alusta viestinvälitysjärjestelmä
+    message_bus = MessageBus()
+    
+    # Luo agentit
+    master = MasterAgent(message_bus)
+    agents = [
+        SearchAgent(message_bus),
+        AnalysisAgent(message_bus),
+        IntegrationAgent(message_bus),
+        TestingAgent(message_bus),
+        OptimizationAgent(message_bus),
+        DocumentationAgent(message_bus)
+    ]
+    
+    # Rekisteröi agentit pääagentille
+    agent_types = ["search", "analysis", "integration", "testing", "optimization", "documentation"]
+    for agent, agent_type in zip(agents, agent_types):
+        master.register_agent(agent_type, agent)
+    
+    print("🤖 GitHub Code Fusion Agent - Moniagenttijärjestelmä käynnistetty")
+    
+    while True:
+        task = input("\nAnna tehtäväkuvaus (tai 'lopeta'): ")
+        if task.lower() == "lopeta":
+            break
+        
+        # Lähetä tehtävä pääagentille
+        master.send_message("master", "task_request", task)
+
+if __name__ == "__main__":
+    main()
+```
+
+## Uudet ominaisuudet moniagenttijärjestelmässä
+
+### 1. Agenttien koordinaatio
+- **Hierarkkinen kontrolli**: Pääagentti ohjaa työnkulkua
+- **Tilapohjainen viestinvälitys**: Agentit kommunikoivat tapahtumapohjaisesti
+- **Virheenkäsittely**: Yksittäisten agenttien virheet eivät kaada koko järjestelmää
+
+### 2. Rinnakkaisuus
+```python
+# src/agents/analysis_agent.py
+from concurrent.futures import ThreadPoolExecutor
+
+class AnalysisAgent(BaseAgent):
+    def analyze_repositories(self, repos):
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            futures = [executor.submit(self.analyze_repo, repo) for repo in repos]
+            return [f.result() for f in futures]
+```
+
+### 3. Tilan seuranta
+```python
+# src/agents/master_agent.py
+def handle_status_update(self, status):
+    # Päivitä käyttöliittymään
+    self.ui.update_agent_status(status["agent"], status["message"])
+    
+    # Kirjaa lokiin
+    self.logger.log(f"{status['agent']}: {status['message']}")
+```
+
+### 4. Uudelleenyritysmekanismi
+```python
+# src/agents/integration_agent.py
+def integrate_code(self, code_blocks, retry_count=0):
+    try:
+        # Yhdistämislogiikka
+    except IntegrationError as e:
+        if retry_count < MAX_RETRIES:
+            self.send_message("master", "status_update", {
+                "agent": "integration",
+                "message": f"Yritetään uudelleen ({retry_count+1}/{MAX_RETRIES})"
+            })
+            return self.integrate_code(code_blocks, retry_count+1)
+        else:
+            raise
+```
+
+## Asennus- ja käynnistysohjeet
+
+1. Asenna lisäriippuvuudet:
+```bash
+pip install docker python-dotenv
+```
+
+2. Konfiguroi Docker:
+```bash
+docker --version  # Vaatii Docker Engine v20.10+
+sudo usermod -aG docker $USER  # Lisää käyttäjä docker-ryhmään
+newgrp docker  # Päivitä ryhmäliitokset
+```
+
+3. Käynnistä moniagenttijärjestelmä:
+```bash
+python main.py
+
+🤖 GitHub Code Fusion Agent - Moniagenttijärjestelmä käynnistetty
+
+Anna tehtäväkuvaus (tai 'lopeta'): Luo Python-skripti, joka lukee CSV-tiedoston ja piirtää datasta visualisointeja
+```
+
+## Suorituskyvyn optimoinnit
+
+1. **Agenttien rinnakkaissuoritus**:
+```python
+# src/agents/master_agent.py
+def distribute_subtasks(self, task):
+    # Jaa tehtävä alitehtäviin
+    subtasks = self.task_decomposer.decompose(task)
+    
+    # Lähetä alitehtävät eri agenteille rinnakkain
+    for subtask, agent_type in subtasks:
+        self.send_message(agent_type, "subtask", subtask)
+```
+
+2. **Välimuistitus**:
+```python
+# src/agents/search_agent.py
+from functools import lru_cache
+
+class SearchAgent(BaseAgent):
+    @lru_cache(maxsize=100)
+    def search_github(self, query, languages):
+        # Hakuoperaatio
+```
+
+3. **Resurssien hallinta**:
+```python
+# src/agents/master_agent.py
+def monitor_resources(self):
+    # Tarkista agenttien resurssinkäyttö
+    for agent in self.agents.values():
+        if agent.get_cpu_usage() > 90:
+            self.scale_agent(agent)
+```
+
+Tämä moniagenttijärjestelmä mahdollistaa:
+- Paremman skaalautuvuuden suurten projektien käsittelyyn
+- Vikaantumisenkestävyyden, jossa yksittäisten agenttien virheet eivät vaikuta koko järjestelmään
+- Erikoistuneiden agenttien kehittämisen eri tehtäviin
+- Reaaliaikaisen seurannan ja virheiden korjauksen
+- Tehokkaamman resurssien käytön rinnakkaisuuden avulla
+
+Järjestelmä on suunniteltu laajennettavaksi, joten uusia agentteja voidaan helposti lisätä tulevaisuudessa.
