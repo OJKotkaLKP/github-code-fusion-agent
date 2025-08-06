@@ -1,0 +1,340 @@
+# GitHub Code Fusion Agent - Lisähaaran Toteutus: `feature/smart-dependency-docker`
+
+Tässä on toteutussuunnitelma uudelle haaralle, joka tuo parannetun riippuvuuksien hallinnan ja Docker-pohjaisen suoritusympäristön:
+
+## Haaran Ominaisuudet
+
+### 1. Älykäs Riippuvuuksien Resoluutio
+**Tiedostot:**
+- `src/utils/dependency_resolver.py`
+- `src/utils/package_manager.py`
+
+```python
+# dependency_resolver.py
+import ast
+import re
+from collections import defaultdict
+
+class DependencyResolver:
+    def __init__(self):
+        self.import_graph = defaultdict(list)
+        self.requirements = {}
+    
+    def analyze_code(self, code_block):
+        """Analysoi koodilohkon riippuvuudet"""
+        try:
+            tree = ast.parse(code_block)
+            self._traverse_ast(tree)
+        except SyntaxError:
+            self._fallback_import_analysis(code_block)
+    
+    def _traverse_ast(self, node):
+        """AST-pohjainen importtien analyysi"""
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            for alias in node.names:
+                module = alias.name if not node.module else f"{node.module}.{alias.name}"
+                self.import_graph[module].append({
+                    'lineno': node.lineno,
+                    'context': ast.get_source_segment(code_block, node)
+                })
+    
+    def _fallback_import_analysis(self, code):
+        """Regex-pohjainen varajärjestelmä"""
+        import_patterns = [
+            r'^\s*import\s+([\w\.]+)',
+            r'^\s*from\s+([\w\.]+)\s+import'
+        ]
+        for pattern in import_patterns:
+            matches = re.findall(pattern, code, re.MULTILINE)
+            for match in matches:
+                self.import_graph[match].append({'lineno': 'N/A'})
+    
+    def resolve_conflicts(self):
+        """Ratkaisee versiokonfliktit"""
+        # TODO: Toteuta älykäs konfliktienratkaisu
+        return self._prioritize_common_versions()
+    
+    def generate_requirements(self):
+        """Generoi requirements.txt sisällön"""
+        return "\n".join(f"{pkg}=={ver}" for pkg, ver in self.requirements.items())
+```
+
+### 2. Docker-pohjainen Suoritusympäristö
+**Tiedostot:**
+- `src/execution/docker_manager.py`
+- `templates/Dockerfile.fusion`
+
+```python
+# docker_manager.py
+import docker
+import tempfile
+import os
+
+class DockerExecutionManager:
+    def __init__(self, language="python"):
+        self.client = docker.from_env()
+        self.language = language
+        self.container = None
+    
+    def prepare_environment(self, code, dependencies):
+        """Luo Docker-ympäristön koodin suorittamista varten"""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            # Kirjoita koodi tiedostoon
+            with open(os.path.join(tmp_dir, "main.py"), "w") as f:
+                f.write(code)
+            
+            # Kirjoita riippuvuudet
+            with open(os.path.join(tmp_dir, "requirements.txt"), "w") as f:
+                f.write(dependencies)
+            
+            # Kopioi Dockerfile
+            dockerfile_path = os.path.join("templates", "Dockerfile.fusion")
+            os.system(f"cp {dockerfile_path} {tmp_dir}")
+            
+            # Rakenna Docker-image
+            image, _ = self.client.images.build(path=tmp_dir, tag="code-fusion-agent")
+            return image.id
+    
+    def execute_code(self, image_id, timeout=30):
+        """Suorita koodi Docker-säiliössä"""
+        self.container = self.client.containers.run(
+            image_id,
+            command=f"python main.py",
+            detach=True,
+            mem_limit='512m',
+            cpu_period=100000,
+            cpu_quota=50000,
+            network_mode='none'
+        )
+        
+        try:
+            result = self.container.wait(timeout=timeout)
+            logs = self.container.logs().decode('utf-8')
+            return {
+                'status': 'success' if result['StatusCode'] == 0 else 'error',
+                'exit_code': result['StatusCode'],
+                'logs': logs
+            }
+        except Exception as e:
+            return {'status': 'timeout', 'error': str(e)}
+        finally:
+            self._cleanup()
+    
+    def _cleanup(self):
+        if self.container:
+            self.container.stop()
+            self.container.remove()
+```
+
+### 3. Parannettu Turvallisuusskanneri
+**Tiedosto:** `src/security/security_auditor.py`
+
+```python
+class SecurityAuditor:
+    RISK_PATTERNS = {
+        'os_system': [r"os\.system\s*\(", r"subprocess\.Popen\s*\("],
+        'eval': [r"eval\s*\(", r"exec\s*\("],
+        'pickle': [r"pickle\.loads?\s*\("],
+        'path_traversal': [r"open\s*\([^)]*\.\./"],
+        'deserialization': [r"yaml\.load\s*\(", r"json\.loads?\s*\("],
+        'network': [r"socket\.", r"http\.server\."]
+    }
+    
+    def audit_code(self, code):
+        """Suorittaa kattavan turvallisuustarkastuksen"""
+        results = {
+            'vulnerabilities': [],
+            'risk_level': 'low',
+            'blocked_execution': False
+        }
+        
+        for category, patterns in self.RISK_PATTERNS.items():
+            for pattern in patterns:
+                if re.search(pattern, code):
+                    results['vulnerabilities'].append({
+                        'category': category,
+                        'pattern': pattern,
+                        'severity': self._get_severity(category)
+                    })
+        
+        if any(v['severity'] == 'critical' for v in results['vulnerabilities']):
+            results['risk_level'] = 'critical'
+            results['blocked_execution'] = True
+        
+        return results
+    
+    def _get_severity(self, category):
+        severity_map = {
+            'os_system': 'high',
+            'eval': 'critical',
+            'pickle': 'high',
+            'path_traversal': 'medium',
+            'deserialization': 'medium',
+            'network': 'low'
+        }
+        return severity_map.get(category, 'low')
+```
+
+### 4. Päivitetty Pääsovellus
+**Tiedosto:** `main.py`
+
+```python
+# ... (aiempi koodi)
+
+def enhanced_main():
+    print("🚀 Enhanced GitHub Code Fusion Agent")
+    user_prompt = input("Anna projektikuvaus: ")
+    
+    # 1. Etsi ja analysoi koodit
+    repos = search_github_repositories(user_prompt)
+    code_blocks = extract_relevant_code(repos, user_prompt)
+    
+    # 2. Analysoi riippuvuudet
+    dep_resolver = DependencyResolver()
+    for code in code_blocks:
+        dep_resolver.analyze_code(code)
+    requirements = dep_resolver.generate_requirements()
+    
+    # 3. Yhdistä koodi
+    combined_code = analyze_and_combine_code(code_blocks, user_prompt)
+    final_code = extract_code_from_response(combined_code)
+    
+    # 4. Turvallisuustarkastus
+    auditor = SecurityAuditor()
+    security_report = auditor.audit_code(final_code)
+    
+    if security_report['blocked_execution']:
+        print("⛔ Koodi estetty turvallisuussyistä!")
+        print("Haavoittuvuudet:")
+        for vuln in security_report['vulnerabilities']:
+            print(f"- {vuln['category']} ({vuln['severity']})")
+        return
+    
+    # 5. Valmistele Docker-ympäristö
+    docker_mgr = DockerExecutionManager()
+    image_id = docker_mgr.prepare_environment(final_code, requirements)
+    
+    # 6. Suorita koodi turvallisesti
+    print("\n🏃 Suoritetaan koodia Docker-säiliössä...")
+    result = docker_mgr.execute_code(image_id)
+    
+    print("\n📊 Suorituksen tulos:")
+    print(f"Status: {result['status'].upper()}")
+    print(f"Exit Code: {result['exit_code']}")
+    print("\nLogit:")
+    print(result['logs'][-1000:])  # Näytä vain viimeiset 1000 merkkiä
+
+if __name__ == "__main__":
+    enhanced_main()
+```
+
+## Dockerfile-malli (`templates/Dockerfile.fusion`)
+
+```dockerfile
+# Dockerfile.fusion
+FROM python:3.11-slim
+
+# Asenna perusturvatoimet
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends sandbox && \
+    rm -rf /var/lib/apt/lists/*
+
+# Luo rajoitettu käyttäjä
+RUN useradd --create-home restricteduser
+USER restricteduser
+WORKDIR /home/restricteduser/app
+
+# Kopioi koodi ja riippuvuudet
+COPY . .
+
+# Asenna riippuvuudet turvallisesti
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Suoritusympäristön konfigurointi
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+
+# Rajoita resursseja
+CMD ["timeout", "30", "python", "main.py"]
+```
+
+## Testaussuunnitelma
+
+### Testitapaukset
+1. **Riippuvuusanalyysi**
+   - Testaa importtien tunnistus monimutkaisesta koodista
+   - Simuloi versiokonflikteja ja tarkista konfliktienratkaisu
+
+2. **Docker-suoritus**
+   - Aja erikielisiä ohjelmia (Python, Node.js)
+   - Testaa resurssirajoitusten toimivuus (CPU, muisti)
+   - Simuloi aikakatkaisuja ja tarkista virheenkäsittely
+
+3. **Turvallisuusskannaus**
+   - Syötä koodia, joka sisältää turvallisuusriskejä
+   - Varmista, että kriittiset riskit estävät suorituksen
+   - Tarkista, että vähäriskiset haavoittuvuudet kirjataan oikein
+
+4. **Integraatiotestaus**
+   - Testaa koko putki alusta loppuun
+   - Simuloi GitHub-haussa tapahtuvia virhetilanteita
+   - Tarkista virheenkäsittely Dockerin rakentamisvaiheessa
+
+### Testikattavuus
+```bash
+# Aja testit
+pytest --cov=src --cov-report=html
+
+# Generoi testikattavuusraportti
+open htmlcov/index.html
+```
+
+## Asennus- ja Käyttöohjeet
+
+1. Asenna Docker: https://docs.docker.com/get-docker/
+2. Kloonaa haara:
+```bash
+git clone -b feature/smart-dependency-docker https://github.com/your-username/github-code-fusion-agent.git
+cd github-code-fusion-agent
+```
+
+3. Asenna riippuvuudet:
+```bash
+pip install -r requirements.txt
+```
+
+4. Konfiguroi ympäristömuuttujat (.env-tiedostoon):
+```ini
+GITHUB_TOKEN=your_github_token
+OPENAI_API_KEY=your_openai_api_key
+DOCKER_RUNTIME=runc  # Valinnainen: runc (oletus) tai gvisor
+```
+
+5. Käynnistä sovellus:
+```bash
+python main.py
+```
+
+## Toteutusvaiheet
+
+1. **Riippuvuusmoduulin toteutus** (3 päivää)
+   - AST-pohjainen analyysi
+   - Versiokonfliktien hallinta
+   - Paketinhallintaintegraatio
+
+2. **Docker-integraatio** (2 päivää)
+   - Automaattinen image-rakentaminen
+   - Resurssirajoitusten konfigurointi
+   - Turvallinen suoritusympäristö
+
+3. **Turvallisuusauditorin parannus** (2 päivää)
+   - Kattavampi riskipattern-kirjasto
+   - Dynamoinen riskitasojen määritys
+   - Suorituseston logiikka
+
+4. **Testaus ja virheenkäsittely** (3 päivää)
+   - Yksikkötestit uusille moduuleille
+   - Integraatiotestit koko putkelle
+   - Virheenkäsittelyn parannus
+
+Tämä haara tuo ratkaisevan parannuksen turvallisuuteen ja luotettavuuteen. Docker-pohjainen suoritus varmistaa, että koodi ajetaan eristetyssä ympäristössä, ja kehittynyt riippuvuuksien hallinta vähentää konflikteja ja rikkinäisiä riippuvuuksia.
